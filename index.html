@@ -1,0 +1,400 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>Shinchan High-Speed Infinite Runner</title>
+  <style>
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      user-select: none;
+      -webkit-user-select: none;
+    }
+    body {
+      background: #111;
+      overflow: hidden;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      height: 100vh;
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    }
+    #gameCanvas {
+      background: #87CEEB;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.6);
+      max-width: 100%;
+      max-height: 100%;
+    }
+    #touchHint {
+      position: absolute;
+      bottom: 12px;
+      color: rgba(255, 255, 255, 0.7);
+      font-size: 14px;
+      pointer-events: none;
+      text-shadow: 1px 1px 2px #000;
+    }
+  </style>
+</head>
+<body>
+
+  <canvas id="gameCanvas" width="800" height="450"></canvas>
+  <div id="touchHint">Tap or Press Space to Jump / Double Jump</div>
+
+  <script>
+    const canvas = document.getElementById('gameCanvas');
+    const ctx = canvas.getContext('2d');
+
+    // --- Audio Synthesis (No external assets required) ---
+    const AudioCtx = window.AudioContext || window.webkitAudioContext;
+    let audioCtx = null;
+
+    function playTone(freq, type, duration) {
+      if (!audioCtx) audioCtx = new AudioCtx();
+      try {
+        const osc = audioCtx.createOscillator();
+        const gain = audioCtx.createGain();
+        osc.type = type;
+        osc.frequency.setValueAtTime(freq, audioCtx.currentTime);
+        gain.gain.setValueAtTime(0.15, audioCtx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + duration);
+        osc.connect(gain);
+        gain.connect(audioCtx.destination);
+        osc.start();
+        osc.stop(audioCtx.currentTime + duration);
+      } catch (e) {}
+    }
+
+    // --- Game Variables ---
+    const GROUND_Y = 370;
+    let baseSpeed = 9; // High initial speed
+    let gameSpeed = baseSpeed;
+    let score = 0;
+    let coinsCollected = 0;
+    let gameOver = false;
+    let frame = 0;
+
+    // --- Player: Shinchan (Drawn with vectors) ---
+    const player = {
+      x: 90,
+      y: GROUND_Y - 55,
+      width: 40,
+      height: 55,
+      vy: 0,
+      gravity: 1.1,
+      jumpForce: -19, // High jump strength
+      isGrounded: false,
+      jumpsLeft: 2, // High double jump capability
+      legAngle: 0,
+
+      jump() {
+        if (this.jumpsLeft > 0) {
+          this.vy = this.jumpForce;
+          this.jumpsLeft--;
+          this.isGrounded = false;
+          playTone(480, 'sine', 0.15);
+        }
+      },
+
+      update() {
+        this.vy += this.gravity;
+        this.y += this.vy;
+
+        if (this.y >= GROUND_Y - this.height) {
+          this.y = GROUND_Y - this.height;
+          this.vy = 0;
+          this.isGrounded = true;
+          this.jumpsLeft = 2;
+        }
+
+        // Running animation
+        if (this.isGrounded) {
+          this.legAngle = Math.sin(frame * 0.3) * 12;
+        } else {
+          this.legAngle = 8;
+        }
+      },
+
+      draw() {
+        ctx.save();
+        ctx.translate(this.x, this.y);
+
+        // Legs (Yellow shorts / legs)
+        ctx.fillStyle = '#ffde59';
+        // Left Leg
+        ctx.fillRect(8 - this.legAngle / 2, 42, 10, 14);
+        // Right Leg
+        ctx.fillRect(22 + this.legAngle / 2, 42, 10, 14);
+
+        // Shoes
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(6 - this.legAngle / 2, 52, 12, 4);
+        ctx.fillRect(20 + this.legAngle / 2, 52, 12, 4);
+
+        // Red Shirt (Shinchan's classic top)
+        ctx.fillStyle = '#ff3333';
+        ctx.beginPath();
+        ctx.roundRect(5, 20, 30, 24, 4);
+        ctx.fill();
+
+        // Chubby Head / Cheek
+        ctx.fillStyle = '#fcd0a1';
+        ctx.beginPath();
+        ctx.arc(22, 14, 15, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Shinchan Cheek Bulge
+        ctx.beginPath();
+        ctx.arc(29, 17, 8, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Iconic Thick Eyebrows
+        ctx.strokeStyle = '#000000';
+        ctx.lineWidth = 4;
+        ctx.lineCap = 'round';
+        ctx.beginPath();
+        ctx.moveTo(18, 6);
+        ctx.lineTo(28, 7);
+        ctx.stroke();
+
+        // Eye
+        ctx.fillStyle = '#000000';
+        ctx.beginPath();
+        ctx.arc(27, 13, 2.5, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Rosy Cheek
+        ctx.fillStyle = 'rgba(255, 99, 132, 0.5)';
+        ctx.beginPath();
+        ctx.arc(31, 20, 3.5, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Short Black Hair
+        ctx.fillStyle = '#000000';
+        ctx.beginPath();
+        ctx.arc(18, 8, 12, Math.PI * 0.9, Math.PI * 1.8);
+        ctx.fill();
+
+        ctx.restore();
+      }
+    };
+
+    // --- Entities: Obstacles and Coins ---
+    let obstacles = [];
+    let coins = [];
+
+    function spawnObstacle() {
+      const height = 35 + Math.random() * 25;
+      obstacles.push({
+        x: canvas.width + 50,
+        y: GROUND_Y - height,
+        width: 26,
+        height: height,
+        color: '#8b0000'
+      });
+    }
+
+    function spawnCoin() {
+      // Coins appear at jumping arc heights
+      const coinY = GROUND_Y - (70 + Math.random() * 110);
+      coins.push({
+        x: canvas.width + 50,
+        y: coinY,
+        radius: 10,
+        collected: false
+      });
+    }
+
+    // --- Background & Ground ---
+    let bgOffset = 0;
+    function drawBackground() {
+      // Sky gradient
+      const skyGradient = ctx.createLinearGradient(0, 0, 0, GROUND_Y);
+      skyGradient.addColorStop(0, '#56CCF2');
+      skyGradient.addColorStop(1, '#2F80ED');
+      ctx.fillStyle = skyGradient;
+      ctx.fillRect(0, 0, canvas.width, GROUND_Y);
+
+      // Distant clouds
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.8)';
+      for (let i = 0; i < 4; i++) {
+        const cloudX = ((i * 240) - (bgOffset * 0.2)) % (canvas.width + 100);
+        ctx.beginPath();
+        ctx.arc(cloudX, 70 + (i % 2) * 20, 22, 0, Math.PI * 2);
+        ctx.arc(cloudX + 20, 65 + (i % 2) * 20, 28, 0, Math.PI * 2);
+        ctx.arc(cloudX + 42, 70 + (i % 2) * 20, 20, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      // Ground
+      ctx.fillStyle = '#55a630';
+      ctx.fillRect(0, GROUND_Y, canvas.width, canvas.height - GROUND_Y);
+      ctx.fillStyle = '#386641';
+      ctx.fillRect(0, GROUND_Y, canvas.width, 8);
+    }
+
+    // --- Collision Detection ---
+    function checkAABB(rect1, rect2) {
+      return (
+        rect1.x < rect2.x + rect2.width &&
+        rect1.x + rect1.width > rect2.x &&
+        rect1.y < rect2.y + rect2.height &&
+        rect1.y + rect1.height > rect2.y
+      );
+    }
+
+    // --- Reset Game ---
+    function resetGame() {
+      obstacles = [];
+      coins = [];
+      score = 0;
+      coinsCollected = 0;
+      gameSpeed = baseSpeed;
+      player.y = GROUND_Y - player.height;
+      player.vy = 0;
+      player.jumpsLeft = 2;
+      gameOver = false;
+    }
+
+    // --- Main Loop ---
+    function loop() {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+      if (!gameOver) {
+        frame++;
+        score++;
+        bgOffset += gameSpeed;
+
+        // Accelerate gradually for high-speed infinity feel
+        if (frame % 300 === 0 && gameSpeed < 20) {
+          gameSpeed += 0.4;
+        }
+
+        // Spawn items
+        if (frame % 85 === 0) {
+          if (Math.random() < 0.6) spawnObstacle();
+        }
+        if (frame % 55 === 0) {
+          spawnCoin();
+        }
+
+        player.update();
+      }
+
+      drawBackground();
+
+      // Update & Draw Obstacles
+      for (let i = obstacles.length - 1; i >= 0; i--) {
+        const obs = obstacles[i];
+        if (!gameOver) obs.x -= gameSpeed;
+
+        // Chocobi Box / Obstacle drawing
+        ctx.fillStyle = '#4cd137';
+        ctx.fillRect(obs.x, obs.y, obs.width, obs.height);
+        ctx.fillStyle = '#e84118';
+        ctx.fillRect(obs.x + 3, obs.y + 4, obs.width - 6, obs.height - 8);
+
+        // Obstacle Collision
+        const playerHitbox = {
+          x: player.x + 6,
+          y: player.y + 4,
+          width: player.width - 12,
+          height: player.height - 4
+        };
+        if (checkAABB(playerHitbox, obs)) {
+          gameOver = true;
+          playTone(160, 'sawtooth', 0.4);
+        }
+
+        if (obs.x + obs.width < 0) obstacles.splice(i, 1);
+      }
+
+      // Update & Draw Coins
+      for (let i = coins.length - 1; i >= 0; i--) {
+        const coin = coins[i];
+        if (!gameOver) coin.x -= gameSpeed;
+
+        // Rotating gold look
+        const stretch = Math.cos(frame * 0.15);
+        ctx.fillStyle = '#f1c40f';
+        ctx.beginPath();
+        ctx.ellipse(coin.x, coin.y, Math.abs(coin.radius * stretch) + 2, coin.radius, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = '#d35400';
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+
+        // Coin Collision
+        const dist = Math.hypot((player.x + player.width / 2) - coin.x, (player.y + player.height / 2) - coin.y);
+        if (dist < player.width / 2 + coin.radius) {
+          coinsCollected++;
+          score += 50;
+          playTone(850, 'sine', 0.08);
+          coins.splice(i, 1);
+          continue;
+        }
+
+        if (coin.x + coin.radius < 0) coins.splice(i, 1);
+      }
+
+      player.draw();
+
+      // UI / HUD
+      ctx.fillStyle = '#ffffff';
+      ctx.font = 'bold 18px Arial';
+      ctx.fillText(`Distance: ${Math.floor(score / 10)}m`, 20, 32);
+      ctx.fillText(`Coins: ${coinsCollected}`, 20, 58);
+      ctx.fillText(`Speed: ${gameSpeed.toFixed(1)}x`, 20, 84);
+
+      // Game Over Screen
+      if (gameOver) {
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+        ctx.fillStyle = '#ff4d4d';
+        ctx.font = 'bold 36px Arial';
+        ctx.textAlign = 'center';
+        ctx.fillText('GAME OVER', canvas.width / 2, canvas.height / 2 - 20);
+
+        ctx.fillStyle = '#ffffff';
+        ctx.font = '18px Arial';
+        ctx.fillText(`Total Coins: ${coinsCollected}  |  Final Score: ${Math.floor(score / 10)}`, canvas.width / 2, canvas.height / 2 + 15);
+        ctx.fillText('Tap or Press Space to Restart', canvas.width / 2, canvas.height / 2 + 50);
+        ctx.textAlign = 'left';
+      }
+
+      requestAnimationFrame(loop);
+    }
+
+    // --- Inputs: Spacebar, Click, and Mobile Touch ---
+    function handleAction() {
+      if (gameOver) {
+        resetGame();
+      } else {
+        player.jump();
+      }
+    }
+
+    window.addEventListener('keydown', (e) => {
+      if (e.code === 'Space' || e.code === 'ArrowUp') {
+        e.preventDefault();
+        handleAction();
+      }
+    });
+
+    window.addEventListener('touchstart', (e) => {
+      e.preventDefault();
+      handleAction();
+    }, { passive: false });
+
+    window.addEventListener('mousedown', () => {
+      handleAction();
+    });
+
+    // Start Game Loop
+    loop();
+  </script>
+</body>
+</html>
+  
